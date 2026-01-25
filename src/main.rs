@@ -1,26 +1,26 @@
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use std::sync::mpsc;
+use std::thread;
 
 mod args;
 use args::ARGS;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
     debug!("Args: {:?}", *ARGS);
 
-    let (sender, receiver) = mpsc::channel(ARGS.queue_capacity);
+    let (sender, receiver) = mpsc::sync_channel(ARGS.queue_capacity);
 
-    let finder_handle = tokio::spawn(find_new_files(sender));
-    let copier_handle = tokio::spawn(copy_files(receiver));
+    let finder_handle = thread::spawn(|| find_new_files(sender));
+    let copier_handle = thread::spawn(|| copy_files(receiver));
 
     let mut result: anyhow::Result<()> = Ok(());
-    if let Err(e) = finder_handle.await? {
+    if let Err(e) = finder_handle.join().unwrap() {
         error!("file finder: {}", e);
         result = Err(e);
     }
-    if let Err(e) = copier_handle.await? {
+    if let Err(e) = copier_handle.join().unwrap() {
         error!("file copier: {}", e);
         result = Err(e);
     }
@@ -50,12 +50,11 @@ impl File {
     }
 }
 
-async fn find_new_files(sender: mpsc::Sender<File>) -> anyhow::Result<()> {
+fn find_new_files(sender: mpsc::SyncSender<File>) -> anyhow::Result<()> {
     let mut total_image_files = 0;
     let mut new_image_files = 0;
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
         let e = e?;
-        debug!("Processing {}", e.path().display());
         if !is_image_file(&e) {
             debug!("Skipping non-image");
             continue;
@@ -64,11 +63,11 @@ async fn find_new_files(sender: mpsc::Sender<File>) -> anyhow::Result<()> {
 
         let f = File::read_from_path(e.path())?;
         if !f.needs_copying {
-            debug!("Doesn't need copying");
+            debug!("{} doesn't need copying", e.path().display());
             continue;
         }
-        debug!("Does need copying");
-        sender.send(f).await?;
+        debug!("{} does need copying", e.path().display());
+        sender.send(f)?;
         new_image_files += 1;
     }
 
@@ -79,15 +78,11 @@ async fn find_new_files(sender: mpsc::Sender<File>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn copy_files(mut receiver: mpsc::Receiver<File>) -> anyhow::Result<()> {
-    let mut copied_files = 0;
-    while let Some(f) = receiver.recv().await {
-        copied_files += 1;
+fn copy_files(receiver: mpsc::Receiver<File>) -> anyhow::Result<()> {
+    while let Ok(f) = receiver.recv() {
         info!(
-            "{}Copying {}/{}: {} to {}",
+            "{}Copying {} to {}",
             if ARGS.dry_run { "[dry run] " } else { "" },
-            copied_files,
-            copied_files + receiver.len(),
             f.source_path.display(),
             f.destination_path.display()
         );
@@ -95,7 +90,7 @@ async fn copy_files(mut receiver: mpsc::Receiver<File>) -> anyhow::Result<()> {
             if let Some(parent) = f.destination_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            tokio::fs::copy(f.source_path, f.destination_path).await?;
+            std::fs::copy(f.source_path, f.destination_path)?;
         }
     }
     Ok(())
