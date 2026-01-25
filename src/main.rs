@@ -27,13 +27,12 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-struct File {
+struct CopyOp {
     source_path: PathBuf,
     destination_path: PathBuf,
-    needs_copying: bool,
 }
-impl File {
-    fn read_from_path(path: &Path) -> anyhow::Result<Self> {
+impl CopyOp {
+    fn needs_copying(path: &Path) -> anyhow::Result<Option<Self>> {
         let source_datetime = datetime_from_file(path)?;
         // E.g. "/tmp/foo/2026/01/IMG_foo.jpg"
         let destination_path = PathBuf::new()
@@ -42,15 +41,17 @@ impl File {
             .join(format!("{:02}", source_datetime.month))
             .join(path.file_name().unwrap());
 
-        Ok(Self {
+        if destination_path.try_exists()? {
+            return Ok(None);
+        }
+        Ok(Some(Self {
             source_path: path.to_path_buf(),
-            needs_copying: !destination_path.try_exists()?,
             destination_path,
-        })
+        }))
     }
 }
 
-fn find_new_files(sender: mpsc::SyncSender<File>) -> anyhow::Result<()> {
+fn find_new_files(sender: mpsc::SyncSender<CopyOp>) -> anyhow::Result<()> {
     let mut total_image_files = 0;
     let mut new_image_files = 0;
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
@@ -61,14 +62,13 @@ fn find_new_files(sender: mpsc::SyncSender<File>) -> anyhow::Result<()> {
         }
         total_image_files += 1;
 
-        let f = File::read_from_path(e.path())?;
-        if !f.needs_copying {
+        if let Some(o) = CopyOp::needs_copying(e.path())? {
+            debug!("{} does need copying", e.path().display());
+            sender.send(o)?;
+            new_image_files += 1;
+        } else {
             debug!("{} doesn't need copying", e.path().display());
-            continue;
         }
-        debug!("{} does need copying", e.path().display());
-        sender.send(f)?;
-        new_image_files += 1;
     }
 
     info!(
@@ -78,7 +78,7 @@ fn find_new_files(sender: mpsc::SyncSender<File>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_files(receiver: mpsc::Receiver<File>) -> anyhow::Result<()> {
+fn copy_files(receiver: mpsc::Receiver<CopyOp>) -> anyhow::Result<()> {
     while let Ok(f) = receiver.recv() {
         info!(
             "{}Copying {} to {}",
