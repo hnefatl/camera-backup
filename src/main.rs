@@ -6,12 +6,15 @@ mod args;
 use args::ARGS;
 
 mod counted_channel;
+mod notifier;
 
 fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
     debug!("Args: {:?}", *ARGS);
 
-    let (sender, receiver) = counted_channel::channel(ARGS.queue_capacity);
+    let (sender, receiver, cancel) = counted_channel::channel(ARGS.queue_capacity);
+
+    ctrlc::set_handler(cancel)?;
 
     let finder_handle = thread::spawn(|| find_new_files(sender));
     let copier_handle = thread::spawn(|| copy_files(receiver));
@@ -54,6 +57,9 @@ impl CopyOp {
 
 fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()> {
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
+        if sender.cancelled() {
+            break;
+        }
         let e = e?;
         if !is_image_file(&e) {
             debug!("Skipping non-image: {}", e.path().display());
@@ -72,16 +78,23 @@ fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()>
 
 fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()> {
     let mut copied_files = 0;
+    let notifier = notifier::Notifier::new(ARGS.send_notifications)?;
+
     while let Ok(f) = receiver.recv() {
+        if receiver.cancelled() {
+            return Ok(());
+        }
         copied_files += 1;
+        let total_files = copied_files + receiver.len();
         info!(
             "{}Copying {}/{}: {} to {}",
             if ARGS.dry_run { "[dry run] " } else { "" },
             copied_files,
-            copied_files + receiver.len(),
+            total_files,
             f.source_path.display(),
             f.destination_path.display()
         );
+        notifier.update(copied_files, total_files)?;
         if !ARGS.dry_run {
             if let Some(parent) = f.destination_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -89,6 +102,7 @@ fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()>
             std::fs::copy(f.source_path, f.destination_path)?;
         }
     }
+    notifier.signoff()?;
     Ok(())
 }
 

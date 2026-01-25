@@ -12,6 +12,10 @@ pub struct Args {
     pub dry_run: bool,
     #[arg(long, default_value_t = 1000)]
     pub queue_capacity: usize,
+
+    #[arg(long, default_value_t = true, action=ArgAction::Set)]
+    /// Use `libnotify` to send desktop notifications.
+    pub send_notifications: bool,
 }
 
 pub static ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());

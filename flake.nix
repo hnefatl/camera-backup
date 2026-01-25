@@ -48,8 +48,13 @@
               config = { };
             };
 
-            packages.default = naersk'.buildPackage {
+            packages.default = naersk'.buildPackage rec {
               src = ./.;
+              nativeBuildInputs = with pkgs; [
+                autoPatchelfHook
+                libnotify
+                glib
+              ];
             };
 
             devShells.default = pkgs.mkShell {
@@ -57,8 +62,14 @@
                 cargo
                 pkg-config
                 toolchain
+                libnotify
+                glib
               ];
               RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
+              LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+                pkgs.libnotify
+                pkgs.glib
+              ];
             };
           };
       }
