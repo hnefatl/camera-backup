@@ -1,16 +1,17 @@
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::thread;
 
 mod args;
 use args::ARGS;
 
+mod counted_channel;
+
 fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
     debug!("Args: {:?}", *ARGS);
 
-    let (sender, receiver) = mpsc::sync_channel(ARGS.queue_capacity);
+    let (sender, receiver) = counted_channel::channel(ARGS.queue_capacity);
 
     let finder_handle = thread::spawn(|| find_new_files(sender));
     let copier_handle = thread::spawn(|| copy_files(receiver));
@@ -51,38 +52,33 @@ impl CopyOp {
     }
 }
 
-fn find_new_files(sender: mpsc::SyncSender<CopyOp>) -> anyhow::Result<()> {
-    let mut total_image_files = 0;
-    let mut new_image_files = 0;
+fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()> {
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
         let e = e?;
         if !is_image_file(&e) {
-            debug!("Skipping non-image");
+            debug!("Skipping non-image: {}", e.path().display());
             continue;
         }
-        total_image_files += 1;
 
         if let Some(o) = CopyOp::needs_copying(e.path())? {
             debug!("{} does need copying", e.path().display());
             sender.send(o)?;
-            new_image_files += 1;
         } else {
             debug!("{} doesn't need copying", e.path().display());
         }
     }
-
-    info!(
-        "Found {} total images, {} new images",
-        total_image_files, new_image_files
-    );
     Ok(())
 }
 
-fn copy_files(receiver: mpsc::Receiver<CopyOp>) -> anyhow::Result<()> {
+fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()> {
+    let mut copied_files = 0;
     while let Ok(f) = receiver.recv() {
+        copied_files += 1;
         info!(
-            "{}Copying {} to {}",
+            "{}Copying {}/{}: {} to {}",
             if ARGS.dry_run { "[dry run] " } else { "" },
+            copied_files,
+            copied_files + receiver.len(),
             f.source_path.display(),
             f.destination_path.display()
         );
