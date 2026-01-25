@@ -1,0 +1,134 @@
+use log::{debug, error, info};
+use std::path::{Path, PathBuf};
+use tokio::sync::mpsc;
+
+mod args;
+use args::ARGS;
+
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> anyhow::Result<()> {
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
+    debug!("Args: {:?}", *ARGS);
+
+    let (sender, receiver) = mpsc::channel(ARGS.queue_capacity);
+
+    let finder_handle = tokio::spawn(find_new_files(sender));
+    let copier_handle = tokio::spawn(copy_files(receiver));
+
+    let mut result: anyhow::Result<()> = Ok(());
+    if let Err(e) = finder_handle.await? {
+        error!("file finder: {}", e);
+        result = Err(e);
+    }
+    if let Err(e) = copier_handle.await? {
+        error!("file copier: {}", e);
+        result = Err(e);
+    }
+    result
+}
+
+struct File {
+    source_path: PathBuf,
+    destination_path: PathBuf,
+    needs_copying: bool,
+}
+impl File {
+    fn read_from_path(path: &Path) -> anyhow::Result<Self> {
+        let source_datetime = datetime_from_file(path)?;
+        // E.g. "/tmp/foo/2026/01/IMG_foo.jpg"
+        let destination_path = PathBuf::new()
+            .join(&ARGS.destination_root)
+            .join(format!("{}", source_datetime.year))
+            .join(format!("{:02}", source_datetime.month))
+            .join(path.file_name().unwrap());
+
+        Ok(Self {
+            source_path: path.to_path_buf(),
+            needs_copying: !destination_path.try_exists()?,
+            destination_path,
+        })
+    }
+}
+
+async fn find_new_files(sender: mpsc::Sender<File>) -> anyhow::Result<()> {
+    let mut total_image_files = 0;
+    let mut new_image_files = 0;
+    for e in walkdir::WalkDir::new(&ARGS.source_root) {
+        let e = e?;
+        debug!("Processing {}", e.path().display());
+        if !is_image_file(&e) {
+            debug!("Skipping non-image");
+            continue;
+        }
+        total_image_files += 1;
+
+        let f = File::read_from_path(e.path())?;
+        if !f.needs_copying {
+            debug!("Doesn't need copying");
+            continue;
+        }
+        debug!("Does need copying");
+        sender.send(f).await?;
+        new_image_files += 1;
+    }
+
+    info!(
+        "Found {} total images, {} new images",
+        total_image_files, new_image_files
+    );
+    Ok(())
+}
+
+async fn copy_files(mut receiver: mpsc::Receiver<File>) -> anyhow::Result<()> {
+    let mut copied_files = 0;
+    while let Some(f) = receiver.recv().await {
+        copied_files += 1;
+        info!(
+            "{}Copying {}/{}: {} to {}",
+            if ARGS.dry_run { "[dry run] " } else { "" },
+            copied_files,
+            copied_files + receiver.len(),
+            f.source_path.display(),
+            f.destination_path.display()
+        );
+        if !ARGS.dry_run {
+            if let Some(parent) = f.destination_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            tokio::fs::copy(f.source_path, f.destination_path).await?;
+        }
+    }
+    Ok(())
+}
+
+fn is_image_file(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_file() {
+        return false;
+    }
+    let Some(extension) = entry.path().extension() else {
+        return false;
+    };
+    let lower = extension.to_ascii_lowercase();
+    return lower == "cr2" || lower == "jpg";
+}
+
+fn datetime_from_file(path: &Path) -> anyhow::Result<exif::DateTime> {
+    let f = std::fs::File::open(path)?;
+    let mut br = std::io::BufReader::new(f);
+    let er = exif::Reader::new();
+    let e = er.read_from_container(&mut br)?;
+    let Some(field) = e.get_field(exif::Tag::DateTime, exif::In::PRIMARY) else {
+        anyhow::bail!("[{}] No datetime field", path.display());
+    };
+    let exif::Value::Ascii(ref d) = field.value else {
+        anyhow::bail!(
+            "[{}] Non-ASCII value in datetime field: {:?}",
+            path.display(),
+            field.value
+        );
+    };
+    let Some(d) = d.get(0) else {
+        anyhow::bail!("[{}] Missing data in datetime field", path.display());
+    };
+    Ok(exif::DateTime::from_ascii(d)?)
+}
