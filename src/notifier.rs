@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use glib::variant::ToVariant;
 use libnotify;
+use log::info;
 
 // Returning i32 is necessary for libnotify to treat it like a percentage.
 // Returning 1/1 = 100% to start with looks ugly, avoid it.
@@ -19,6 +20,7 @@ impl Notifier {
     pub fn new(enable: bool) -> anyhow::Result<Self> {
         let notification = if enable {
             if !libnotify::is_initted() {
+                ensure_dbus_session();
                 libnotify::init("camera-backup").map_err(|s| anyhow!(s))?;
             }
             let n = libnotify::Notification::new("SD card loaded", "Backing up photos...", None);
@@ -67,5 +69,22 @@ impl Notifier {
 impl Drop for Notifier {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+/// Workaround for deployment on nixos systemd, where it's started without a DBUS session.
+fn ensure_dbus_session() {
+    let dbus_addr = "DBUS_SESSION_BUS_ADDRESS";
+    match std::env::var(dbus_addr) {
+        Err(std::env::VarError::NotPresent) => {
+            let dbus_path = format!("unix:path=/run/user/{}/bus", users::get_current_uid());
+            info!("Setting missing {} to {}", dbus_addr, dbus_path);
+            unsafe {
+                std::env::set_var(dbus_addr, dbus_path);
+            }
+        }
+        o => {
+            info!("Not setting {}, already has value {:?}", dbus_addr, o)
+        }
     }
 }
