@@ -1,6 +1,7 @@
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::Instant;
 
 mod args;
 use args::ARGS;
@@ -56,6 +57,7 @@ impl CopyOp {
 }
 
 fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()> {
+    let start_time = Instant::now();
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
         if sender.cancelled() {
             break;
@@ -73,6 +75,10 @@ fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()>
             debug!("{} doesn't need copying", e.path().display());
         }
     }
+    info!(
+        "Finished scanning files in {:#?}",
+        Instant::now() - start_time
+    );
     Ok(())
 }
 
@@ -80,10 +86,13 @@ fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()>
     let mut copied_files = 0;
     let notifier = notifier::Notifier::new(ARGS.send_notifications)?;
 
+    let mut start_time = None;
     while let Ok(f) = receiver.recv() {
         if receiver.cancelled() {
             return Ok(());
         }
+        start_time.get_or_insert_with(Instant::now);
+
         copied_files += 1;
         let total_files = copied_files + receiver.len();
         info!(
@@ -101,6 +110,12 @@ fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()>
             }
             std::fs::copy(f.source_path, f.destination_path)?;
         }
+    }
+    if let Some(start_time) = start_time {
+        info!(
+            "Finished copying files in {:#?}",
+            Instant::now() - start_time
+        );
     }
     notifier.signoff()?;
     Ok(())
