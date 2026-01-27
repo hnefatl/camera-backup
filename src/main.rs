@@ -75,10 +75,7 @@ fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()>
             debug!("{} doesn't need copying", e.path().display());
         }
     }
-    info!(
-        "Finished scanning files in {:#?}",
-        Instant::now() - start_time
-    );
+    info!("Finished scanning files in {:#?}", Instant::now() - start_time);
     Ok(())
 }
 
@@ -112,10 +109,7 @@ fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()>
         }
     }
     if let Some(start_time) = start_time {
-        info!(
-            "Finished copying files in {:#?}",
-            Instant::now() - start_time
-        );
+        info!("Finished copying files in {:#?}", Instant::now() - start_time);
     }
     notifier.signoff()?;
     Ok(())

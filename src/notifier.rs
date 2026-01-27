@@ -38,10 +38,7 @@ impl Notifier {
             n.update("SD card loaded", Some(body.as_str()), None)
                 .map_err(|s| anyhow!(s))?;
 
-            n.set_hint(
-                "value",
-                Some(progress_percentage(current, total).to_variant()),
-            );
+            n.set_hint("value", Some(progress_percentage(current, total).to_variant()));
             n.show()?;
         }
         Ok(())
