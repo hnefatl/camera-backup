@@ -114,7 +114,7 @@ fn is_image_file(entry: &walkdir::DirEntry) -> bool {
         return false;
     };
     let lower = extension.to_ascii_lowercase();
-    return lower == "cr2" || lower == "jpg";
+    lower == "cr2" || lower == "jpg"
 }
 
 fn datetime_from_file(path: &Path) -> anyhow::Result<exif::DateTime> {
@@ -132,7 +132,7 @@ fn datetime_from_file(path: &Path) -> anyhow::Result<exif::DateTime> {
             field.value
         );
     };
-    let Some(d) = d.get(0) else {
+    let Some(d) = d.first() else {
         anyhow::bail!("[{}] Missing data in datetime field", path.display());
     };
     Ok(exif::DateTime::from_ascii(d)?)

@@ -18,4 +18,4 @@ pub struct Args {
     pub send_notifications: bool,
 }
 
-pub static ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());
+pub static ARGS: LazyLock<Args> = LazyLock::new(Args::parse);

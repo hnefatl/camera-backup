@@ -42,7 +42,7 @@ impl<T> Receiver<T> {
 }
 unsafe impl<T: Send> Send for Receiver<T> {}
 
-pub fn channel<T>(bound: usize) -> (Sender<T>, Receiver<T>, impl Fn() -> ()) {
+pub fn channel<T>(bound: usize) -> (Sender<T>, Receiver<T>, impl Fn()) {
     let (sender, receiver) = mpsc::sync_channel(bound);
     let count = Rc::new(Mutex::new(0));
     let cancelled = Arc::new(AtomicBool::new(false));

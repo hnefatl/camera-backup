@@ -1,6 +1,5 @@
 use anyhow::anyhow;
 use glib::variant::ToVariant;
-use libnotify;
 use log::info;
 
 // Returning i32 is necessary for libnotify to treat it like a percentage.
