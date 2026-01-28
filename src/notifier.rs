@@ -14,6 +14,7 @@ fn progress_percentage(current: usize, total: usize) -> i32 {
 
 pub struct Notifier {
     notification: Option<libnotify::Notification>,
+    signed_off: bool,
 }
 impl Notifier {
     pub fn new(enable: bool) -> anyhow::Result<Self> {
@@ -29,7 +30,10 @@ impl Notifier {
         } else {
             None
         };
-        Ok(Notifier { notification })
+        Ok(Notifier {
+            notification,
+            signed_off: false,
+        })
     }
 
     pub fn update(&self, current: usize, total: usize) -> anyhow::Result<()> {
@@ -43,7 +47,7 @@ impl Notifier {
         }
         Ok(())
     }
-    pub fn signoff(self) -> anyhow::Result<()> {
+    pub fn signoff(mut self) -> anyhow::Result<()> {
         if let Some(n) = &self.notification {
             n.update("SD card loaded", Some("Photos backed up"), None)
                 .map_err(|s| anyhow!(s))?;
@@ -51,20 +55,17 @@ impl Notifier {
             // Clear the progress bar, for standard-looking notification.
             n.set_hint("value", None);
             n.show()?;
-            std::mem::forget(self)
-        }
-        Ok(())
-    }
-    pub fn close(&self) -> anyhow::Result<()> {
-        if let Some(n) = &self.notification {
-            n.close()?;
+            self.signed_off = true;
         }
         Ok(())
     }
 }
 impl Drop for Notifier {
     fn drop(&mut self) {
-        let _ = self.close();
+        // Ensure we clean up the notification when the object goes out of scope.
+        if let Some(n) = &self.notification && !self.signed_off{
+            let _ = n.close();
+        }
     }
 }
 
