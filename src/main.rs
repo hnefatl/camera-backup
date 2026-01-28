@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
+#[derive(Debug)]
 struct CopyOp {
     source_path: PathBuf,
     destination_path: PathBuf,
@@ -59,9 +60,6 @@ impl CopyOp {
 fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()> {
     let start_time = Instant::now();
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
-        if sender.cancelled() {
-            break;
-        }
         let e = e?;
         if !is_image_file(&e) {
             debug!("Skipping non-image: {}", e.path().display());
@@ -75,6 +73,7 @@ fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()>
             debug!("{} doesn't need copying", e.path().display());
         }
     }
+    sender.finish();
     info!("Finished scanning files in {:#?}", Instant::now() - start_time);
     Ok(())
 }
@@ -84,10 +83,7 @@ fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()>
     let notifier = notifier::Notifier::new(ARGS.send_notifications)?;
 
     let mut start_time = None;
-    while let Ok(f) = receiver.recv() {
-        if receiver.cancelled() {
-            return Ok(());
-        }
+    while let Some(f) = receiver.recv()? {
         start_time.get_or_insert_with(Instant::now);
 
         copied_files += 1;

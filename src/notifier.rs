@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use glib::variant::ToVariant;
-use log::info;
+use log::{debug, info};
 
 // Returning i32 is necessary for libnotify to treat it like a percentage.
 // Returning 1/1 = 100% to start with looks ugly, avoid it.
@@ -14,7 +14,6 @@ fn progress_percentage(current: usize, total: usize) -> i32 {
 
 pub struct Notifier {
     notification: Option<libnotify::Notification>,
-    signed_off: bool,
 }
 impl Notifier {
     pub fn new(enable: bool) -> anyhow::Result<Self> {
@@ -30,10 +29,7 @@ impl Notifier {
         } else {
             None
         };
-        Ok(Notifier {
-            notification,
-            signed_off: false,
-        })
+        Ok(Notifier { notification })
     }
 
     pub fn update(&self, current: usize, total: usize) -> anyhow::Result<()> {
@@ -49,22 +45,29 @@ impl Notifier {
     }
     pub fn signoff(mut self) -> anyhow::Result<()> {
         if let Some(n) = &self.notification {
+            debug!("Signing off notifier");
             n.update("SD card loaded", Some("Photos backed up"), None)
                 .map_err(|s| anyhow!(s))?;
             n.set_timeout(5000);
             // Clear the progress bar, for standard-looking notification.
             n.set_hint("value", None);
             n.show()?;
-            self.signed_off = true;
+            self.notification = None;
         }
         Ok(())
     }
 }
 impl Drop for Notifier {
     fn drop(&mut self) {
-        // Ensure we clean up the notification when the object goes out of scope.
-        if let Some(n) = &self.notification && !self.signed_off{
+        // If the notification goes out of scope without being signed off, something must've gone wrong.
+        if let Some(n) = &self.notification {
+            debug!("Dropping unclean notifier: backup failed");
             let _ = n.close();
+            let _ = n.update("SD card loaded", Some("Failed to backup photos"), None);
+            n.set_urgency(libnotify::Urgency::Critical);
+            n.set_timeout(0);
+            n.set_hint("value", None); // Clear the progress bar.
+            let _ = n.show();
         }
     }
 }
