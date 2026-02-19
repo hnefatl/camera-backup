@@ -54,6 +54,7 @@
                 autoPatchelfHook
                 libnotify
                 glib
+                protobuf
               ];
             };
 
@@ -64,6 +65,7 @@
                 toolchain
                 libnotify
                 glib
+                protobuf
               ];
               RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
               LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [

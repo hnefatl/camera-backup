@@ -1,0 +1,23 @@
+syntax = "proto2";
+
+import "google/protobuf/timestamp.proto";
+
+package camera_backup;
+
+service CameraBackup {
+    rpc Exists(ExistsRequest) returns (ExistsResponse);
+    rpc Send(SendRequest) returns (SendResponse);
+}
+
+message ExistsRequest {
+    required string file_name = 1;
+    required google.protobuf.Timestamp created = 2;
+}
+message ExistsResponse {
+    required bool exists = 1;
+}
+
+message SendRequest {
+    required string file_name = 1;
+}
+message SendResponse {}

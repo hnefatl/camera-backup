@@ -1,0 +1,11 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lib = { path = "../lib" }
+prost = "0.14"
+tonic = "0.14"
+tonic-prost = "0.14"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
