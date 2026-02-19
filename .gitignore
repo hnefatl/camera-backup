@@ -1,4 +1,4 @@
 /.direnv/
 # \`nix build\` output
-/result
-/target
+**/result
+**/target

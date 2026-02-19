@@ -1,0 +1,16 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+kamadak-exif = "0.6.1"
+walkdir = "2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+libnotify = "1"
+glib = "0.4"
+ctrlc = { version = "3", features = ["termination"] }
+users = "0.11"
