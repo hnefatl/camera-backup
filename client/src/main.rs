@@ -1,144 +1,162 @@
+use anyhow::bail;
+use lib::proto::camera_backup_client::CameraBackupClient;
+use lib::proto::{ExistsRequest, SendRequest};
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
+use tokio_stream::Stream;
+use tonic::transport::Endpoint;
 
 mod args;
 use args::ARGS;
 
-mod counted_channel;
 mod notifier;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
+async fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("INFO"));
     debug!("Args: {:?}", *ARGS);
 
-    let (sender, receiver, cancel) = counted_channel::channel(ARGS.queue_capacity);
+    let address = Endpoint::try_from(ARGS.server_address.clone())?;
+    let client = CameraBackupClient::connect(address).await?;
 
-    ctrlc::set_handler(cancel)?;
+    let counters = Arc::new(Mutex::new(Counters {
+        found: 0,
+        exist: 0,
+        sent: 0,
+    }));
+    let task_config = TaskConfig {
+        client,
+        inflight_sends: Arc::new(Semaphore::new(ARGS.max_inflight_sends)),
+        counters: counters.clone(),
+    };
 
-    let finder_handle = thread::spawn(|| find_new_files(sender));
-    let copier_handle = thread::spawn(|| copy_files(receiver));
-
-    let mut result: anyhow::Result<()> = Ok(());
-    if let Err(e) = finder_handle.join().unwrap() {
-        error!("file finder: {}", e);
-        result = Err(e);
-    }
-    if let Err(e) = copier_handle.join().unwrap() {
-        error!("file copier: {}", e);
-        result = Err(e);
-    }
-    result
-}
-
-#[derive(Debug)]
-struct CopyOp {
-    source_path: PathBuf,
-    destination_path: PathBuf,
-}
-impl CopyOp {
-    fn needs_copying(path: &Path) -> anyhow::Result<Option<Self>> {
-        let source_datetime = datetime_from_file(path)?;
-        // E.g. "/tmp/foo/2026/01/IMG_foo.jpg"
-        let destination_path = PathBuf::new()
-            .join(&ARGS.destination_root)
-            .join(format!("{}", source_datetime.year))
-            .join(format!("{:02}", source_datetime.month))
-            .join(path.file_name().unwrap());
-
-        if destination_path.try_exists()? {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            source_path: path.to_path_buf(),
-            destination_path,
-        }))
-    }
-}
-
-fn find_new_files(sender: counted_channel::Sender<CopyOp>) -> anyhow::Result<()> {
     let start_time = Instant::now();
+    let mut join_handles = JoinSet::new();
+
+    let mut num_failed_tasks = 0;
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
         let e = e?;
-        if !is_image_file(&e) {
+        if !lib::is_image_file(&e) {
             debug!("Skipping non-image: {}", e.path().display());
             continue;
         }
+        debug!("[{}] found {}", counters.lock().await, e.path().display());
 
-        if let Some(o) = CopyOp::needs_copying(e.path())? {
-            debug!("{} does need copying", e.path().display());
-            sender.send(o)?;
-        } else {
-            debug!("{} doesn't need copying", e.path().display());
-        }
+        join_handles.spawn(handle_file_task(task_config.clone(), e.path().to_path_buf()));
+        counters.lock().await.found += 1;
     }
-    sender.finish();
     info!("Finished scanning files in {:#?}", Instant::now() - start_time);
+    let results = join_handles.join_all().await;
+    info!("All tasks completed after in {:#?}", Instant::now() - start_time);
+    num_failed_tasks += results.iter().flatten().count();
+    if num_failed_tasks > 0 {
+        bail!("{} tasks failed", num_failed_tasks);
+    }
     Ok(())
 }
 
-fn copy_files(receiver: counted_channel::Receiver<CopyOp>) -> anyhow::Result<()> {
-    let mut copied_files = 0;
-    let notifier = notifier::Notifier::new(ARGS.send_notifications)?;
+#[derive(Debug, Clone)]
+struct Counters {
+    found: u32,
+    exist: u32,
+    sent: u32,
+}
+impl std::fmt::Display for Counters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "found: {}, exist: {}, sent: {}",
+            self.found, self.exist, self.sent
+        ))
+    }
+}
+#[derive(Debug, Clone)]
+struct TaskConfig {
+    client: CameraBackupClient<tonic::transport::Channel>,
+    inflight_sends: Arc<Semaphore>,
+    counters: Arc<Mutex<Counters>>,
+}
 
-    let mut start_time = None;
-    while let Some(f) = receiver.recv()? {
-        start_time.get_or_insert_with(Instant::now);
+async fn handle_file_task(config: TaskConfig, path: PathBuf) -> Option<anyhow::Error> {
+    if let Err(e) = handle_file(config, &path).await {
+        error!("[{}] {}", path.display(), e);
+        return Some(e);
+    }
+    None
+}
+async fn handle_file(mut config: TaskConfig, path: &Path) -> anyhow::Result<()> {
+    let filename = path.file_name().unwrap().to_str().unwrap().to_string();
+    let exists_request = ExistsRequest {
+        filename: filename.clone(),
+    };
 
-        copied_files += 1;
-        let total_files = copied_files + receiver.len();
-        info!(
-            "{}Copying {}/{}: {} to {}",
-            if ARGS.dry_run { "[dry run] " } else { "" },
-            copied_files,
-            total_files,
-            f.source_path.display(),
-            f.destination_path.display()
-        );
-        notifier.update(copied_files, total_files)?;
-        if !ARGS.dry_run {
-            if let Some(parent) = f.destination_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(f.source_path, f.destination_path)?;
+    debug!("Sending Exists request for {}", path.display());
+    let exists_response = config.client.exists(exists_request).await?;
+    {
+        let mut counters = config.counters.lock().await;
+        if exists_response.get_ref().exists {
+            counters.exist += 1;
+            debug!("[{}] {} already exists", counters, path.display());
+            return Ok(());
         }
+        debug!("[{}] {} doesn't exist", counters, path.display());
     }
-    if let Some(start_time) = start_time {
-        info!("Finished copying files in {:#?}", Instant::now() - start_time);
+
+    let _permit = config.inflight_sends.acquire().await?;
+    if !ARGS.dry_run {
+        debug!(
+            "[{}] Sending Send request for {}",
+            config.counters.lock().await,
+            path.display()
+        );
+
+        let read_start = Instant::now();
+        let contents = tokio::fs::read(path.to_path_buf()).await?;
+        let read_time = Instant::now() - read_start;
+        let stream = stream_file(filename, contents)?;
+        let send_start = Instant::now();
+        config.client.send(stream).await?;
+        let send_time = Instant::now() - send_start;
+
+        let mut counters = config.counters.lock().await;
+        counters.sent += 1;
+        info!(
+            "[{}] Sent {} (file read: {:.02}s, send: {:.02}s)",
+            counters,
+            path.display(),
+            read_time.as_secs_f32(),
+            send_time.as_secs_f32()
+        );
+    } else {
+        debug!(
+            "[dry run] [{}] Sending Send request for {}",
+            config.counters.lock().await,
+            path.display()
+        );
     }
-    notifier.signoff()?;
     Ok(())
 }
 
-fn is_image_file(entry: &walkdir::DirEntry) -> bool {
-    if !entry.file_type().is_file() {
-        return false;
+fn stream_file(filename: String, contents: Vec<u8>) -> anyhow::Result<impl Stream<Item = SendRequest>> {
+    let mut chunks = contents.chunks(ARGS.chunk_size).map(|c| c.to_vec());
+    let Some(init_chunk) = chunks.next() else {
+        // Could just send empty contents, but this is probably something to be alerted on.
+        bail!("Empty file");
+    };
+    let mut requests = vec![SendRequest {
+        filename: Some(filename),
+        created: Some(lib::Date::from_file_exif(contents.clone())?.into()),
+        contents: init_chunk,
+    }];
+    for chunk in chunks {
+        requests.push(SendRequest {
+            filename: None,
+            created: None,
+            contents: chunk,
+        });
     }
-    let Some(extension) = entry.path().extension() else {
-        return false;
-    };
-    let lower = extension.to_ascii_lowercase();
-    lower == "cr2" || lower == "jpg"
-}
-
-fn datetime_from_file(path: &Path) -> anyhow::Result<exif::DateTime> {
-    let f = std::fs::File::open(path)?;
-    let mut br = std::io::BufReader::new(f);
-    let er = exif::Reader::new();
-    let e = er.read_from_container(&mut br)?;
-    let Some(field) = e.get_field(exif::Tag::DateTime, exif::In::PRIMARY) else {
-        anyhow::bail!("[{}] No datetime field", path.display());
-    };
-    let exif::Value::Ascii(ref d) = field.value else {
-        anyhow::bail!(
-            "[{}] Non-ASCII value in datetime field: {:?}",
-            path.display(),
-            field.value
-        );
-    };
-    let Some(d) = d.first() else {
-        anyhow::bail!("[{}] Missing data in datetime field", path.display());
-    };
-    Ok(exif::DateTime::from_ascii(d)?)
+    Ok(tokio_stream::iter(requests))
 }

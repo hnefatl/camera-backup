@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+lib = { path = "../lib" }
 clap = { version = "4", features = ["derive"] }
-kamadak-exif = "0.6.1"
 walkdir = "2"
 anyhow = "1"
 log = "0.4"
@@ -14,3 +14,9 @@ libnotify = "1"
 glib = "0.4"
 ctrlc = { version = "3", features = ["termination"] }
 users = "0.11"
+prost = "0.14"
+tonic = "0.14"
+tonic-prost = "0.14"
+prost-types = "0.14"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "fs"] }
+tokio-stream = "0.1"
