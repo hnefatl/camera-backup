@@ -13,6 +13,8 @@ use tonic::transport::Endpoint;
 mod args;
 use args::ARGS;
 
+use crate::notifier::Notifier;
+
 mod notifier;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -32,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         client,
         inflight_sends: Arc::new(Semaphore::new(ARGS.max_inflight_sends)),
         counters: counters.clone(),
+        notifier: Arc::new(Notifier::new(ARGS.send_notifications)?),
     };
 
     let start_time = Instant::now();
@@ -73,11 +76,12 @@ impl std::fmt::Display for Counters {
         ))
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct TaskConfig {
     client: CameraBackupClient<tonic::transport::Channel>,
     inflight_sends: Arc<Semaphore>,
     counters: Arc<Mutex<Counters>>,
+    notifier: Arc<Notifier>,
 }
 
 async fn handle_file_task(config: TaskConfig, path: PathBuf) -> Option<anyhow::Error> {
