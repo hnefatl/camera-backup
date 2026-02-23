@@ -4,11 +4,11 @@ use log::{debug, info};
 
 // Returning i32 is necessary for libnotify to treat it like a percentage.
 // Returning 1/1 = 100% to start with looks ugly, avoid it.
-fn progress_percentage(current: usize, total: usize) -> i32 {
-    if current == 1 && total == 1 {
+fn progress_percentage(current: u32, total: u32) -> i32 {
+    if (current == 1 && total == 1) || total == 0 {
         0
     } else {
-        (100 * current as i32) / total as i32
+        ((100 * current) / total) as i32
     }
 }
 
@@ -32,7 +32,7 @@ impl Notifier {
         Ok(Notifier { notification })
     }
 
-    pub fn update(&self, current: usize, total: usize) -> anyhow::Result<()> {
+    pub fn update(&self, current: u32, total: u32) -> anyhow::Result<()> {
         if let Some(n) = &self.notification {
             let body = format!("Backing up photos [{}/{}]", current, total);
             n.update("SD card loaded", Some(body.as_str()), None)

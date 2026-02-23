@@ -4,7 +4,8 @@ use lib::proto::{ExistsRequest, SendRequest};
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use tokio_stream::Stream;
@@ -34,11 +35,19 @@ async fn main() -> anyhow::Result<()> {
         client,
         inflight_sends: Arc::new(Semaphore::new(ARGS.max_inflight_sends)),
         counters: counters.clone(),
-        notifier: Arc::new(Notifier::new(ARGS.send_notifications)?),
     };
 
     let start_time = Instant::now();
     let mut join_handles = JoinSet::new();
+
+    let shutdown_notifier = Arc::new(AtomicBool::new(false));
+    let notifier_thread = if ARGS.send_notifications {
+        let notifier = shutdown_notifier.clone();
+        let counters = counters.clone();
+        Some(std::thread::spawn(|| notifier_task(notifier, counters)))
+    } else {
+        None
+    };
 
     let mut num_failed_tasks = 0;
     for e in walkdir::WalkDir::new(&ARGS.source_root) {
@@ -59,6 +68,14 @@ async fn main() -> anyhow::Result<()> {
     if num_failed_tasks > 0 {
         bail!("{} tasks failed", num_failed_tasks);
     }
+    if let Some(n) = notifier_thread {
+        shutdown_notifier.store(true, Ordering::Relaxed);
+        match n.join() {
+            Err(e) => error!("failed to join notifier thread: {:?}", e),
+            Ok(j) => j?,
+        }
+    }
+    debug!("Shutting down notifier");
     Ok(())
 }
 
@@ -81,7 +98,6 @@ struct TaskConfig {
     client: CameraBackupClient<tonic::transport::Channel>,
     inflight_sends: Arc<Semaphore>,
     counters: Arc<Mutex<Counters>>,
-    notifier: Arc<Notifier>,
 }
 
 async fn handle_file_task(config: TaskConfig, path: PathBuf) -> Option<anyhow::Error> {
@@ -163,4 +179,15 @@ fn stream_file(filename: String, contents: Vec<u8>) -> anyhow::Result<impl Strea
         });
     }
     Ok(tokio_stream::iter(requests))
+}
+
+fn notifier_task(shutdown: Arc<AtomicBool>, counters: Arc<Mutex<Counters>>) -> anyhow::Result<()> {
+    let n = Notifier::new(ARGS.send_notifications)?;
+    while !shutdown.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_secs(1));
+        let c = counters.blocking_lock();
+        n.update(c.sent, c.found - c.exist)?;
+    }
+    n.signoff()?;
+    Ok(())
 }
