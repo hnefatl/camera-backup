@@ -82,7 +82,7 @@ impl CameraBackup for Server {
         let filename = message
             .filename
             .ok_or(Status::invalid_argument("initial message had `filename` unset"))?;
-        debug!("got Send call from {:?} for {}", request.remote_addr(), filename,);
+        info!("got Send call from {:?} for {}", request.remote_addr(), filename,);
         let created = message
             .created
             .ok_or(Status::invalid_argument("initial message had `created` unset"))?;
@@ -108,6 +108,16 @@ impl CameraBackup for Server {
         }
         if let Err(e) = f.sync_all().await {
             error!("Failed syncing {} to disk: {}", dest_path.display(), e);
+        }
+        match f.metadata().await {
+            Ok(m) => {
+                let mut p = m.permissions();
+                p.set_readonly(true);
+                if let Err(e) = f.set_permissions(p).await {
+                    error!("Failed to set {} permissions: {}", dest_path.display(), e);
+                }
+            }
+            Err(e) => error!("Failed to get {} metadata: {}", dest_path.display(), e),
         }
         let mut filenames = self.filenames.lock().await;
         filenames.insert(filename.clone(), date);
