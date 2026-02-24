@@ -151,8 +151,8 @@ async fn handle_file(mut config: TaskConfig, path: &Path) -> anyhow::Result<()> 
             send_time.as_secs_f32()
         );
     } else {
-        debug!(
-            "[dry run] [{}] Sending Send request for {}",
+        info!(
+            "[dry run] [{}] Sent {}",
             config.counters.lock().await,
             path.display()
         );

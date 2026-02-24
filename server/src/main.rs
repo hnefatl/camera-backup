@@ -5,7 +5,7 @@ use lib::proto::{
     ExistsRequest, ExistsResponse, SendRequest, SendResponse,
     camera_backup_server::{CameraBackup, CameraBackupServer},
 };
-use log::{debug, info};
+use log::{debug, error, info};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use tonic::{Request, Response, Status};
 
@@ -94,7 +94,8 @@ impl CameraBackup for Server {
         }
         let mut f = tokio::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .open(dest_path.clone())
             .await?;
 
@@ -104,6 +105,9 @@ impl CameraBackup for Server {
                 break;
             };
             message = m;
+        }
+        if let Err(e) = f.sync_all().await {
+            error!("Failed syncing {} to disk: {}", dest_path.display(), e);
         }
         let mut filenames = self.filenames.lock().await;
         filenames.insert(filename.clone(), date);
