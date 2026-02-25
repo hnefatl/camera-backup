@@ -79,6 +79,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+macro_rules! time {
+    ($e: expr) => {{
+        let read_start = Instant::now();
+        let result = $e;
+        (result, Instant::now() - read_start)
+    }};
+}
+
 #[derive(Debug, Clone)]
 struct Counters {
     found: u32,
@@ -133,13 +141,9 @@ async fn handle_file(mut config: TaskConfig, path: &Path) -> anyhow::Result<()> 
             path.display()
         );
 
-        let read_start = Instant::now();
-        let contents = tokio::fs::read(path.to_path_buf()).await?;
-        let read_time = Instant::now() - read_start;
+        let (contents, read_time) = time!(tokio::fs::read(path.to_path_buf()).await?);
         let stream = stream_file(filename, contents)?;
-        let send_start = Instant::now();
-        config.client.send(stream).await?;
-        let send_time = Instant::now() - send_start;
+        let (_, send_time) = time!(config.client.send(stream).await?);
 
         let mut counters = config.counters.lock().await;
         counters.sent += 1;
@@ -151,11 +155,7 @@ async fn handle_file(mut config: TaskConfig, path: &Path) -> anyhow::Result<()> 
             send_time.as_secs_f32()
         );
     } else {
-        info!(
-            "[dry run] [{}] Sent {}",
-            config.counters.lock().await,
-            path.display()
-        );
+        info!("[dry run] [{}] Sent {}", config.counters.lock().await, path.display());
     }
     Ok(())
 }
