@@ -100,7 +100,7 @@ impl CameraBackup for Server {
             .await?;
 
         loop {
-            f.write(&message.contents).await?;
+            f.write_all(&message.contents).await?;
             let Some(m) = request.get_mut().message().await? else {
                 break;
             };
