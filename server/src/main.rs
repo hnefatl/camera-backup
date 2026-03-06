@@ -1,4 +1,4 @@
-use std::{collections::HashMap, os::unix::fs::MetadataExt};
+use std::{collections::HashMap, os::unix::fs::MetadataExt, path::Path};
 
 use anyhow::bail;
 use lib::proto::{
@@ -107,6 +107,9 @@ impl CameraBackup for Server {
         if let Some(p) = dest_path.parent() {
             tokio::fs::create_dir_all(p).await?;
         }
+        if dest_path.exists() {
+            set_readonly(&dest_path, false)?;
+        }
         let mut f = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -126,21 +129,23 @@ impl CameraBackup for Server {
         if let Err(e) = f.sync_all().await {
             error!("Failed syncing {} to disk: {}", dest_path.display(), e);
         }
-        match f.metadata().await {
-            Ok(m) => {
-                let mut p = m.permissions();
-                p.set_readonly(true);
-                if let Err(e) = f.set_permissions(p).await {
-                    error!("Failed to set {} permissions: {}", dest_path.display(), e);
-                }
-            }
-            Err(e) => error!("Failed to get {} metadata: {}", dest_path.display(), e),
-        }
+        set_readonly(&dest_path, true)?;
         let mut filenames = self.filenames.lock().await;
         filenames.insert(filename.clone(), FileMetadata { path_date: date, size });
-        info!("Wrote {} of size {}, now tracking {} files.", dest_path.display(), size, filenames.len());
+        info!(
+            "Wrote {} of size {}, now tracking {} files.",
+            dest_path.display(),
+            size,
+            filenames.len()
+        );
         Ok(Response::new(SendResponse {}))
     }
+}
+
+fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
+    let mut perms = path.metadata()?.permissions();
+    perms.set_readonly(readonly);
+    std::fs::set_permissions(path, perms)
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
