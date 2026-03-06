@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, os::unix::fs::MetadataExt};
 
 use anyhow::bail;
 use lib::proto::{
@@ -27,10 +27,16 @@ impl<T> IntoStatus<T> for anyhow::Result<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FileMetadata {
+    path_date: lib::Date,
+    size: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct Server {
     // Filename like `IMG_6812.jpg` to the date components of the path.
-    filenames: Mutex<HashMap<String, lib::Date>>,
+    filenames: Mutex<HashMap<String, FileMetadata>>,
 }
 impl Server {
     fn init_from_directory_tree(directory: &str) -> anyhow::Result<Self> {
@@ -46,7 +52,13 @@ impl Server {
             let Some(decoded_filename) = entry.file_name().to_str() else {
                 bail!("Unable to decode filename: {:?}", entry.file_name());
             };
-            filenames.insert(decoded_filename.to_owned(), date);
+            filenames.insert(
+                decoded_filename.to_owned(),
+                FileMetadata {
+                    path_date: date,
+                    size: entry.metadata()?.size(),
+                },
+            );
         }
         info!(
             "Finished processing existing directory tree, found {} files",
@@ -66,9 +78,12 @@ impl CameraBackup for Server {
             request.get_ref().filename
         );
         let filenames = self.filenames.lock().await;
-        Ok(Response::new(ExistsResponse {
-            exists: filenames.contains_key(&request.get_ref().filename),
-        }))
+        let exists = if let Some(file_metadata) = filenames.get(&request.get_ref().filename) {
+            file_metadata.size == request.get_ref().size
+        } else {
+            false
+        };
+        Ok(Response::new(ExistsResponse { exists }))
     }
     async fn send(
         &self,
@@ -99,8 +114,10 @@ impl CameraBackup for Server {
             .open(dest_path.clone())
             .await?;
 
+        let mut size = 0u64;
         loop {
             f.write_all(&message.contents).await?;
+            size += message.contents.len() as u64;
             let Some(m) = request.get_mut().message().await? else {
                 break;
             };
@@ -120,8 +137,8 @@ impl CameraBackup for Server {
             Err(e) => error!("Failed to get {} metadata: {}", dest_path.display(), e),
         }
         let mut filenames = self.filenames.lock().await;
-        filenames.insert(filename.clone(), date);
-        info!("Wrote {}, now tracking {} files.", dest_path.display(), filenames.len());
+        filenames.insert(filename.clone(), FileMetadata { path_date: date, size });
+        info!("Wrote {} of size {}, now tracking {} files.", dest_path.display(), size, filenames.len());
         Ok(Response::new(SendResponse {}))
     }
 }

@@ -10,7 +10,7 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/camera_backup.rs"));
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Date {
     year: u16,
     // Starting from 1=January

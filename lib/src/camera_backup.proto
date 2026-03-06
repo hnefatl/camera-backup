@@ -11,6 +11,7 @@ service CameraBackup {
 
 message ExistsRequest {
     required string filename = 1;
+    required uint64 size = 2;
 }
 message ExistsResponse {
     required bool exists = 1;

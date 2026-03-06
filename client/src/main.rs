@@ -2,6 +2,7 @@ use anyhow::bail;
 use lib::proto::camera_backup_client::CameraBackupClient;
 use lib::proto::{ExistsRequest, SendRequest};
 use log::{debug, error, info};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,6 +124,7 @@ async fn handle_file(mut config: TaskConfig, path: &Path) -> anyhow::Result<()> 
     let filename = path.file_name().unwrap().to_str().unwrap().to_string();
     let exists_request = ExistsRequest {
         filename: filename.clone(),
+        size: path.metadata()?.size(),
     };
 
     debug!("Sending Exists request for {}", path.display());
