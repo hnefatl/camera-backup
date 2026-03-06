@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
         join_handles.spawn(handle_file_task(task_config.clone(), e.path().to_path_buf()));
         counters.lock().await.found += 1;
     }
-    info!("Finished scanning files in {:#?}", Instant::now() - start_time);
+    info!("Finished scanning files in {:#?}, found {}", Instant::now() - start_time, counters.lock().await.found);
     let results = join_handles.join_all().await;
     info!("All tasks completed after in {:#?}", Instant::now() - start_time);
     num_failed_tasks += results.iter().flatten().count();
